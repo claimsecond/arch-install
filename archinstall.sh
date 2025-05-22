@@ -2,8 +2,14 @@
 
 set -euo pipefail
 
-# === DEVICE SETTINGS ===
-DISK="/dev/sdX"  # Replace sdX with actual device (e.g. sda)
+# === USER CONFIGURATION ===
+DISK="/dev/sdX"         # Устройство диска (например, /dev/sda или /dev/nvme0n1)
+HOSTNAME="archlinux"    # Имя хоста
+USERNAME="user"         # Имя пользователя
+USER_PASSWORD="password" # Пароль пользователя
+TIMEZONE="UTC"          # Таймзона (например, Europe/Moscow)
+LOCALE="en_US.UTF-8"    # Локаль
+
 
 # === PARTITIONS ===
 EFI_PART="${DISK}1"
@@ -25,7 +31,7 @@ mount "$ROOT_PART" "$MNT"
 btrfs subvolume create "$MNT/@"
 btrfs subvolume create "$MNT/@home"
 btrfs subvolume create "$MNT/@var"
-btrfs subvolume create "$MNT/@snapshots"
+btrfs subvolume create "$MNT/@.snapshots"
 umount "$MNT"
 
 # === MOUNT SUBVOLUMES ===
@@ -35,7 +41,7 @@ mount -o noatime,compress=zstd,subvol=@ "$ROOT_PART" "$MNT"
 mkdir -p "$MNT/"{boot,home,var,.snapshots}
 mount -o noatime,compress=zstd,subvol=@home "$ROOT_PART" "$MNT/home"
 mount -o noatime,compress=zstd,subvol=@var "$ROOT_PART" "$MNT/var"
-mount -o noatime,compress=zstd,subvol=@snapshots "$ROOT_PART" "$MNT/.snapshots"
+mount -o noatime,compress=zstd,subvol=@.snapshots "$ROOT_PART" "$MNT/.snapshots"
 
 mount "$BOOT_PART" "$MNT/boot"
 mkdir -p "$MNT/boot/efi"
@@ -51,19 +57,19 @@ genfstab -U "$MNT" >> "$MNT/etc/fstab"
 # === CHROOT CONFIGURATION ===
 arch-chroot "$MNT" /bin/bash <<EOF
 
-ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
 hwclock --systohc
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+echo "${LOCALE} UTF-8" > /etc/locale.gen
 locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
-echo "archlinux" > /etc/hostname
+echo "LANG=${LOCALE}" > /etc/locale.conf
+echo "${HOSTNAME}" > /etc/hostname
 
 # Networking
 systemctl enable NetworkManager
 
 # Add user
-useradd -m -G wheel -s /bin/bash user
-passwd user
+useradd -m -G wheel -s /bin/bash ${USERNAME}
+echo "${USERNAME}:${USER_PASSWORD}" | chpasswd
 
 # Sudo access
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers

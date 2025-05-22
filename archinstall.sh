@@ -10,11 +10,29 @@ USER_PASSWORD="password" # Пароль пользователя
 TIMEZONE="UTC"          # Таймзона (например, Europe/Moscow)
 LOCALE="en_US.UTF-8"    # Локаль
 
+# === PARTITIONING ===
+echo "Partitioning disk $DISK..."
 
-# === PARTITIONS ===
-EFI_PART="${DISK}1"
-BOOT_PART="${DISK}2"
-ROOT_PART="${DISK}3"
+# Удаляем все существующие разделы (ОСТОРОЖНО: удалит все данные на диске!)
+parted --script "$DISK" \
+  mklabel gpt \
+  mkpart ESP fat32 1MiB 301MiB \
+  set 1 esp on \
+  mkpart boot ext4 301MiB 1325MiB \
+  mkpart root btrfs 1325MiB 100%
+
+sleep 2  # Даем ядру время увидеть новые разделы
+
+# Обновляем переменные разделов (для NVMe дисков добавляем 'p')
+if [[ "$DISK" == *"nvme"* ]]; then
+  EFI_PART="${DISK}p1"
+  BOOT_PART="${DISK}p2"
+  ROOT_PART="${DISK}p3"
+else
+  EFI_PART="${DISK}1"
+  BOOT_PART="${DISK}2"
+  ROOT_PART="${DISK}3"
+fi
 
 # === MOUNT POINTS ===
 MNT="/mnt"

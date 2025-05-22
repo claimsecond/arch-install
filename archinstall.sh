@@ -1,111 +1,102 @@
 #!/bin/bash
+
 set -euo pipefail
 
-# ======== CONFIG ========
-DISK="/dev/sdX"  # ← ← ← УКАЖИ НУЖНЫЙ ДИСК!
-USERNAME="user"
+# Disk device (e.g., /dev/sdX)
+DISK="/dev/sdX"
+EFI_PART="${DISK}1"
+BOOT_PART="${DISK}2"
+ROOT_PART="${DISK}3"
+
+# Hostname and user config
 HOSTNAME="archlinux"
-PASSWORD="password"  # для root и юзера
-LOCALE="en_US.UTF-8"
-KEYMAP="us"
+USERNAME="user"
+PASSWORD="password"  # Replace with secure password or prompt
+
+# Timezone and locale
 TIMEZONE="Europe/Kyiv"
+LOCALE="en_US.UTF-8"
 
-# ======== DISK PREP ========
-wipefs -af "$DISK"
-parted -s "$DISK" mklabel gpt
-parted -s "$DISK" mkpart primary fat32 1MiB 301MiB
-parted -s "$DISK" set 1 esp on
-parted -s "$DISK" mkpart primary ext4 301MiB 1300MiB
-parted -s "$DISK" mkpart primary btrfs 1300MiB 100%
+# Partition the disk (adjust for actual disk)
+sgdisk --zap-all "$DISK"
+sgdisk -n 1:0:+300M -t 1:ef00 "$DISK"
+sgdisk -n 2:0:+1G   -t 2:8300 "$DISK"
+sgdisk -n 3:0:0     -t 3:8300 "$DISK"
 
-mkfs.fat -F32 ${DISK}1
-mkfs.ext4 -L boot ${DISK}2
-mkfs.btrfs -f -L root ${DISK}3
+# Format partitions
+mkfs.fat -F32 "$EFI_PART"
+mkfs.ext4 "$BOOT_PART"
+mkfs.btrfs -f "$ROOT_PART"
 
-# ======== BTRFS SETUP ========
-mount ${DISK}3 /mnt
+# Create mountpoint
+mount "$ROOT_PART" /mnt
+
+# Create subvolumes
 btrfs su cr /mnt/@
 btrfs su cr /mnt/@home
 btrfs su cr /mnt/@var
 btrfs su cr /mnt/@snapshots
 umount /mnt
 
-mount -o compress=zstd:3,subvol=@ ${DISK}3 /mnt
-mkdir -p /mnt/{boot,home,var,.snapshots}
-mount -o compress=zstd:3,subvol=@home ${DISK}3 /mnt/home
-mount -o compress=zstd:3,subvol=@var ${DISK}3 /mnt/var
-mount -o compress=zstd:3,subvol=@snapshots ${DISK}3 /mnt/.snapshots
-mount ${DISK}2 /mnt/boot
-mount ${DISK}1 /mnt/boot/efi
+# Mount subvolumes
+mount -o noatime,compress=zstd,subvol=@ "$ROOT_PART" /mnt
+mkdir -p /mnt/{boot,home,var,.snapshots,boot/efi}
+mount -o noatime,compress=zstd,subvol=@home "$ROOT_PART" /mnt/home
+mount -o noatime,compress=zstd,subvol=@var "$ROOT_PART" /mnt/var
+mount -o noatime,compress=zstd,subvol=@snapshots "$ROOT_PART" /mnt/.snapshots
+mount "$BOOT_PART" /mnt/boot
+mount "$EFI_PART" /mnt/boot/efi
 
-# ======== BASE INSTALL ========
-pacstrap -K /mnt base base-devel linux linux-firmware btrfs-progs grub efibootmgr networkmanager sudo git
+# Install base system
+pacstrap -K /mnt base linux linux-firmware btrfs-progs sudo grub efibootmgr os-prober snapper git base-devel networkmanager
 
-# ======== CONFIG ========
+# Generate fstab
 genfstab -U /mnt >> /mnt/etc/fstab
-arch-chroot /mnt /bin/bash -e <<EOF
+
+# Chroot and configure
+arch-chroot /mnt /bin/bash <<EOF
 
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 hwclock --systohc
-echo "$LOCALE UTF-8" > /etc/locale.gen
+
+sed -i "s/#$LOCALE/$LOCALE/" /etc/locale.gen
 locale-gen
 echo "LANG=$LOCALE" > /etc/locale.conf
-echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
 echo "$HOSTNAME" > /etc/hostname
+
+# Hosts config
 cat <<HOSTS > /etc/hosts
-127.0.0.1 localhost
-::1       localhost
-127.0.1.1 $HOSTNAME.localdomain $HOSTNAME
+127.0.0.1       localhost
+::1             localhost
+127.0.1.1       $HOSTNAME.localdomain $HOSTNAME
 HOSTS
 
-echo root:$PASSWORD | chpasswd
+# User and password
+useradd -m -G wheel $USERNAME
+echo "$USERNAME:$PASSWORD" | chpasswd
+sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-useradd -m -G wheel -s /bin/bash $USERNAME
-echo $USERNAME:$PASSWORD | chpasswd
-sed -i '/%wheel ALL=(ALL:ALL) ALL/s/^# //' /etc/sudoers
-
+# Enable services
 systemctl enable NetworkManager
 
-# Bootloader
-mkdir -p /boot/efi
+# Setup grub with btrfs support
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
-sed -i 's/^#GRUB_DISABLE_SUBMENU=.*/GRUB_DISABLE_SUBMENU=y/' /etc/default/grub
+mkdir -p /boot/grub
+
+# Enable grub-btrfs integration
+pacman -Sy --noconfirm grub-btrfs
+mkdir -p /etc/grub.d
+snapper --config root create-config /
+
+# Configure snapper snapshots
+systemctl enable snapper-timeline.timer
+systemctl enable snapper-cleanup.timer
+systemctl enable grub-btrfs.path
+
+# Regenerate grub config
 grub-mkconfig -o /boot/grub/grub.cfg
-
-# Snapper config
-pacman -S --noconfirm snapper grub-btrfs inotify-tools
-snapper -c root create-config /
-sed -i 's|^SUBVOLUME=.*|SUBVOLUME="/"|' /etc/snapper/configs/root
-mkdir -p /.snapshots
-mount -a
-
-# Hook for autosnap
-mkdir -p /etc/pacman.d/hooks
-cat <<HOOK > /etc/pacman.d/hooks/50-autosnap-pre.hook
-[Trigger]
-Operation = Upgrade
-Operation = Install
-Operation = Remove
-Type = Package
-Target = *
-
-[Action]
-Description = Create Snapper pre-snap before package upgrade
-When = PreTransaction
-Exec = /usr/bin/snapper --config root create --description "pre pacman"
-HOOK
-
-# Enable grub-btrfs
-systemctl enable --now grub-btrfs.path
-
-# AUR helper
-pacman -S --noconfirm git
-cd /home/$USERNAME
-sudo -u $USERNAME git clone https://aur.archlinux.org/paru.git
-cd paru
-sudo -u $USERNAME makepkg -si --noconfirm
-
 EOF
 
+# Unmount and finish
 umount -R /mnt
-echo "Installation complete. Reboot now."
+echo "Installation complete. Reboot your system."

@@ -3,12 +3,12 @@
 set -euo pipefail
 
 # === USER CONFIGURATION ===
-DISK="/dev/sdX"         # Устройство диска (например, /dev/sda или /dev/nvme0n1)
-HOSTNAME="archlinux"    # Имя хоста
-USERNAME="user"         # Имя пользователя
-USER_PASSWORD="password" # Пароль пользователя
-TIMEZONE="UTC"          # Таймзона (например, Europe/Moscow)
-LOCALE="en_US.UTF-8"    # Локаль
+DISK="/dev/sdX"         # Disk device (e.g., /dev/sda or /dev/nvme0n1)
+HOSTNAME="archlinux"    # Hostname
+USERNAME="user"         # Username
+USER_PASSWORD="password" # User password
+TIMEZONE="Europe/Kiev"  # Timezone
+LOCALE="en_US.UTF-8"    # Locale
 
 # === PARTITIONING ===
 echo "Partitioning disk $DISK..."
@@ -100,8 +100,9 @@ grub-mkconfig -o /boot/grub/grub.cfg
 # Enable Snapper (optional, can expand)
 pacman -S --noconfirm snapper
 snapper -c root create-config /
-mv /etc/snapper/configs/root /etc/snapper/configs/@
-sed -i 's|/\.snapshots|/.snapshots|' /etc/snapper/configs/@
+if [ -f /etc/snapper/configs/root ]; then
+  sed -i 's|/\\.snapshots|/.snapshots|' /etc/snapper/configs/root
+fi
 
 EOF
 
